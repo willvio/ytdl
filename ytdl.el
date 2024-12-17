@@ -44,7 +44,7 @@
 
 ;;; Code:
 
-(require 'eshell)
+(require 'esh-mode)
 (require 'async)
 (require 'transient)
 (require 'cl-lib)
@@ -89,9 +89,9 @@
   "Whether to always query default filename.
 
 Values can be:
-- 'never: never query default filename,
-- 'yes-confirm: always query but ask confirmation to user,
-- 'yes: always query and use the default filename without confirmation."
+- \\='never: never query default filename,
+- \\='yes-confirm: always query but ask confirmation to user,
+- \\='yes: always query and use the default filename without confirmation."
   :group 'ytdl
   :type 'boolean)
 
@@ -112,7 +112,9 @@ The following %-escapes will be expanded using `format-spec':
 %e The entry's extension.
 %b The entry's bitrate.
 %r The entry's resolution.
-%i The entry's ID.")
+%i The entry's ID."
+  :group 'ytdl
+  :type '(string))
 
 (defcustom ytdl-mode-line
   t
@@ -158,7 +160,7 @@ youtube-dl.")
     ("Videos" "v"  ytdl-video-folder ytdl-video-extra-args))
   "List of destination folders.
 
-Each element is a list '(FIELD-NAME SHORTCUT
+Each element is a list \\='(FIELD-NAME SHORTCUT
 ABSOLUTE-PATH-TO-FOLDER EXTRA-COMMAND-LINE-ARGS) where:
 FIELD-NAME is a string; SHORTCUT is a string (only one
 character); ABSOLUTE-PATH-TO-FOLDER is the absolute path to the
@@ -250,7 +252,9 @@ Keys are UUID.
   :group 'ytdl)
 
 (defcustom ytdl-download-finished-functions nil
-  "Abnormal hook run when a file has finished download. This hook will run after the normal hook. The arguments are the filename and UUID of the downloaded file."
+  "Abnormal hook run when a file has finished download.
+This hook will run after the normal hook.
+The arguments are the filename and UUID of the downloaded file."
   :type 'hook
   :group 'ytdl)
 
@@ -303,7 +307,7 @@ INCREMENT value.
 (defun ytdl-add-field-in-download-type-list (field-name keyboard-shortcut path-to-folder extra-args)
   "Add new field in the list of download types `ytdl-download-types'.
 
-Add element '(FIELD-NAME KEYBOARD-SHORTCUT PATH-TO-FOLDER
+Add element \\='(FIELD-NAME KEYBOARD-SHORTCUT PATH-TO-FOLDER
                            EXTRA-ARGS) to list of download types.
 
 Note that the PATH-TO-FOLDER and EXTRA-ARGS can be symbols."
@@ -324,6 +328,7 @@ This opration is asynchronous."
 
   (let ((eshell-buffer-name "*ytdl*"))
     (eshell)
+    (rename-buffer eshell-buffer-name)
     (when (eshell-interactive-process)
       (eshell t))
     (eshell-interrupt-process)
@@ -491,7 +496,8 @@ creates DESTINATION-FOLDER and returns t. Else, returns nil."
   "Open FILENAME in `ytdl-media-player'.
 
 FILENAME can be a string (i.e. a single file) or a list of strings."
-  (let (media-player-args)
+  (let ((media-player-args)
+	(filename (expand-file-name filename)))
     (if (equal (type-of filename) 'string)
         (setq media-player-args (shell-quote-argument filename))
       (setq media-player-args (mapconcat (lambda (file)
