@@ -358,7 +358,8 @@ of ytdl."
     (with-temp-buffer
       (call-process ytdl-command nil t nil
                     "--get-filename"
-                    "--restrict-filenames"
+		    "-o"
+		    "%(title)s.%(ext)s"
                     "--" url )
       (goto-char (point-min))
       (if (search-forward-regexp "^ERROR" nil t)
