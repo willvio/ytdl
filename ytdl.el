@@ -368,7 +368,7 @@ of ytdl."
             (error (buffer-substring-no-properties (line-beginning-position)
                                                    (line-end-position))))
         (search-forward ".")
-        (replace-regexp-in-string "/\\|_"
+        (replace-regexp-in-string "/"
                                   "-"
                                   (buffer-substring-no-properties (line-beginning-position)
                                                                   (1- (point))))))))
