@@ -314,7 +314,22 @@ Note that the PATH-TO-FOLDER and EXTRA-ARGS can be symbols."
   (add-to-list 'ytdl-download-types `(,field-name ,keyboard-shortcut ,path-to-folder ,extra-args)))
 
 
-(defun ytdl--run-ytdl-eshell (url destination-folder filename &optional extra-ytdl-args)
+(defun ytdl--regex-escape-special (str)
+  "Escape . * + ? ^ $ { } [ ] ( ) | \ in str
+
+It calls replace-regexp-in-string twice since I didn't
+find a decent way to escape ]. Therefore, this method needs
+further optimization."
+  (replace-regexp-in-string
+   "\\]"
+   "\\\\\\&"
+   (replace-regexp-in-string
+    "[.*+?^${}()|\\\\[]"
+    "\\\\\\&"
+    str)))
+
+
+(defun ytdl--run-ytdl-eshell (url destination-folder filename &optional extra-ytdl-args chapter)
   "Run ytdl in a new eshell buffer.
 
 URL is the url of the video to download.  DESTINATION-FOLDER is
@@ -324,27 +339,48 @@ relative path (from DESTINATION-FOLDER) of the output file.
 Optional argument EXTRA-YTDL-ARGS is the list of extra arguments
 to youtube-dl.
 
-This opration is asynchronous."
+CHAPTER is a particular chapter name of a video
 
-  (let ((eshell-buffer-name "*ytdl*"))
-    (eshell)
-    (rename-buffer eshell-buffer-name)
-    (when (eshell-interactive-process)
-      (eshell t))
-    (eshell-interrupt-process)
-    (insert (concat "cd "
+This opration is asynchronous."
+  (kill-new (expand-file-name filename destination-folder))
+  (let ((eshell-buffer-name "*ytdl*")
+	(cmd (concat "cd "
                     (shell-quote-argument destination-folder)
                     " && " ytdl-command " "
                     (shell-quote-argument url)
                     " -o "
-                    (shell-quote-argument filename)
+                    (format "\"%s\"" filename)
                     ".%(ext)s"
                     (when extra-ytdl-args
                       (concat " "
                               (mapconcat #'shell-quote-argument
                                          extra-ytdl-args
-                                         " ")))))
+                                         " "))))))
+    (if chapter
+	(setq cmd (concat cmd " --download-sections " (format "\"%s\"" (ytdl--regex-escape-special chapter)))))
+    (eshell)
+    (rename-buffer eshell-buffer-name)
+    (when (eshell-interactive-process)
+      (eshell t))
+    (eshell-interrupt-process)
+    (insert cmd)
     (eshell-send-input)))
+
+
+(defun ytdl--get-chapter-list (url)
+  "Extract YouTube chapter titles from the given URL."
+  (let* ((url (shell-quote-argument url))
+         (json-output (shell-command-to-string (format "yt-dlp --dump-json %s" url))))
+    (if (string-match "^ERROR.*$" json-output)
+        (error (match-string 0 json-output))  ;; Handle error output from yt-dlp
+      (condition-case err
+          (let* ((json-object (json-parse-string json-output :object-type 'alist))
+                 (chapters (alist-get 'chapters json-object)))
+            (if (and chapters (not (eq chapters :null)))
+                (mapcar #'(lambda (chapter) (alist-get 'title chapter)) chapters)
+              nil))
+        (error
+         (error "ERROR: %s" (error-message-string err)))))))
 
 
 (defun ytdl--get-default-filename (url)
@@ -435,44 +471,15 @@ returns the value of the symbol."
             (ytdl--eval-field arg))
           list))
 
-
-(defun ytdl--get-filename (destination-folder url)
-  "Query a filename in mini-buffer.
-
-If `ytdl-always-query-default-filename' is t, then the
-defaultvalue in the mini-buffer is the default filename of the
-URL.
-
-Returns a valid string:
-- no '/' in the filename
-- The filename does not exist yet in DESTINATION-FOLDER."
-
-  (let* ((prompt (ytdl--concat "Filename [no extension]: "))
-         (default-filename (ytdl--get-default-filename url))
-         (filename (or (when (equal ytdl-always-query-default-filename
-                                    'yes)
-                         default-filename)
-                       (read-from-minibuffer prompt
-                                             default-filename))))
-    (while (or (cl-search "/" filename)
-               (and (file-exists-p destination-folder)
-                    (let ((filename-completed (file-name-completion
-                                               filename destination-folder)))
-                      (when filename-completed
-                        (string= (file-name-nondirectory filename)
-                                 (substring filename-completed
-                                            0
-                                            (cl-search "."
-                                                       filename-completed)))))))
-      (minibuffer-message (ytdl--concat
-                           (if (cl-search "/" filename)
-                               "Filename cannot contain '/'!"
-                             "Filename already exist in the destination folder (eventually with a different extension)!")))
-      (setq filename (read-from-minibuffer prompt
-                                           default-filename)))
-    (setq filename (concat destination-folder
-                           "/"
-                           filename))))
+(defun ytdl--get-chapter (url)
+  "Query a chapter name in mini-buffer."
+  (let ((chapters (ytdl--get-chapter-list url)))
+    (if chapters
+        (let ((selected-chapter (completing-read "Select a chapter: " chapters nil t)))
+          (if (string-empty-p selected-chapter)
+              nil  ;; Return nil if the user cancels the selection
+            selected-chapter))  ;; Return the selected chapter
+      (error "No chapters available for this video."))))
 
 
 (defun ytdl--destination-folder-exists-p (destination-folder)
@@ -610,26 +617,72 @@ UUID is the key of the list item in `ytdl--download-list'."
   (run-hook-with-args 'ytdl-download-finished-functions filename uuid))
 
 
-(defun ytdl--get-args (&optional no-filename)
+(defun ytdl--get-filename (destination-folder default-filename chapter)
+  "Query user for the file name based on the default filename and the
+chapter they chosen"
+  (let* ((prompt (ytdl--concat "Filename [no extension]: "))
+	 (default-chapter-filename (cond
+               ((and default-filename chapter)
+                (concat default-filename " -- " chapter))
+               (default-filename
+                default-filename)
+               (chapter
+                chapter)
+               (t nil)))
+	 (filename (or (when (equal ytdl-always-query-default-filename
+                                    'yes)
+                         default-chapter-filename)
+                       (read-from-minibuffer prompt
+                                             default-chapter-filename))))
+    (while (or (cl-search "/" filename)
+               (and (file-exists-p destination-folder)
+                    (let ((filename-completed (file-name-completion
+                                               filename destination-folder)))
+                      (when filename-completed
+                        (string= (file-name-nondirectory filename)
+                                 (substring filename-completed
+                                            0
+                                            (cl-search "."
+                                                       filename-completed)))))
+		    ))
+      (minibuffer-message (ytdl--concat
+                           (if (cl-search "/" filename)
+                               "Filename cannot contain '/'!"
+                             "Filename already exist in the destination folder (eventually with a different extension)!")))
+      (setq filename (read-from-minibuffer prompt
+                                           default-chapter-filename)))
+    (setq filename (concat destination-folder
+                           "/"
+                           filename))))
+
+
+(defun ytdl--get-args (&optional no-filename chapter-query)
   "Query user for ytdl arguments.
 
 NO-FILENAME is non-nil, then don't query the user for the
-filename."
+filename.
+
+CHAPTER-QUERY is t, then query the user for the chapter to
+download."
   (let* ((url (read-from-minibuffer (ytdl--concat "URL: ")
                                     (or (thing-at-point 'url t)
                                         (current-kill 0))))
          (dl-type (ytdl--get-download-type))
          (dl-type-name (nth 0 dl-type))
          (destination-folder (ytdl--eval-field (nth 1 dl-type)))
-         (filename (if no-filename
+         (extra-ytdl-args (ytdl--eval-list (ytdl--eval-field (nth 2 dl-type))))
+	 (default-filename (ytdl--get-default-filename url))
+	 (chapter (if chapter-query
+		      (ytdl--get-chapter url)
+		    nil))
+	 (filename (if no-filename
                        (concat destination-folder "/")
-                     (ytdl--get-filename  destination-folder url)))
-         (extra-ytdl-args (ytdl--eval-list (ytdl--eval-field (nth 2 dl-type)))))
+                     (ytdl--get-filename  destination-folder default-filename chapter))))
     (unless (ytdl--destination-folder-exists-p destination-folder)
       (error (concat "Destination folder '"
                      destination-folder
                      "' does not exist.")))
-    (list url filename extra-ytdl-args dl-type-name)))
+    (list url filename extra-ytdl-args dl-type-name chapter)))
 
 (defun ytdl--list-formats (url)
   "List all available formats for the stream with URL."
@@ -734,6 +787,27 @@ destination folder and extra arguments, see
                           extra-ytdl-args
                           nil
                           dl-type-name)))
+
+
+;;;###autoload
+(defun ytdl-download-chapter-eshell ()
+  "Download asynchronously file chapter from a web server."
+  (interactive)
+  (when (ytdl--youtube-dl-missing-p)
+    (error "youtube-dl is not installed."))
+  (let* ((out (ytdl--get-args nil t))
+         (url (nth 0 out))
+         (filename (nth 1 out))
+         (extra-ytdl-args (nth 2 out))
+         (dl-type-name (nth 3 out))
+	 (chapter (nth 4 out)))
+    (if chapter
+	(ytdl--run-ytdl-eshell url
+			       (file-name-directory filename)
+			       (file-name-nondirectory filename)
+			       extra-ytdl-args
+			       chapter)
+      (error "No chapters available for this video."))))
 
 
 ;;;###autoload
