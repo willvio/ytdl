@@ -62,7 +62,7 @@
   "1.3.6"
   "Version of ytdl.")
 
-(defcustom ytdl-command "youtube-dl"
+(defcustom ytdl-command "yt-dlp"
   "The youtube-dl program."
   :type 'string)
 
